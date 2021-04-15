@@ -43,108 +43,187 @@ using namespace std;
 namespace ORB_SLAM2
 {
 
+Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap, KeyFrameDatabase* pKFDB, const CameraParameters &cam, const OrbParameters &orb, const int sensor):
+    mState(NO_IMAGES_YET), mSensor(sensor), mbOnlyTracking(false), mbVO(false), mpORBVocabulary(pVoc),
+    mpKeyFrameDB(pKFDB), mpInitializer(static_cast<Initializer*>(NULL)), mpSystem(pSys), mpViewer(NULL),
+    mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpMap(pMap), mnLastRelocFrameId(0)
+{
+
+  //==========================================================
+  //
+  //    Camera Parameters
+  //
+  //==========================================================
+
+  if (cam.K.type() != CV_32F)
+    throw(std::invalid_argument("Error creating ORB SLAM tracker: Camera matrix type mismatch!"));
+
+  if (cam.distCoeffs.type() != CV_32F)
+    throw(std::invalid_argument("Error creating ORB SLAM tracker: Camera matrix type mismatch!"));
+
+  float fx = cam.K.at<float>(0, 0);
+  float fy = cam.K.at<float>(1, 1);
+  float cx = cam.K.at<float>(0, 2);
+  float cy = cam.K.at<float>(1, 2);
+
+  mK = cam.K;
+  mDistCoef = cam.distCoeffs;
+
+  std::cout << "- Camera: Pinhole" << std::endl;
+  std::cout << "- fx: " << fx << std::endl;
+  std::cout << "- fy: " << fy << std::endl;
+  std::cout << "- cx: " << cx << std::endl;
+  std::cout << "- cy: " << cy << std::endl;
+  std::cout << "- k1: " << mDistCoef.at<float>(0) << std::endl;
+  std::cout << "- k2: " << mDistCoef.at<float>(1) << std::endl;
+  std::cout << "- p1: " << mDistCoef.at<float>(2) << std::endl;
+  std::cout << "- p2: " << mDistCoef.at<float>(3) << std::endl;
+
+  if(mDistCoef.rows==5)
+    std::cout << "- k3: " << mDistCoef.at<float>(4) << std::endl;
+
+  int fps = static_cast<int>(cam.fps);
+  if(fps==0)
+    fps=30;
+
+  // Max/Min Frames to insert keyframes and to check relocalisation
+  mMinFrames = 0;
+  mMaxFrames = fps;
+
+  int nRGB = cam.isRGB;
+  mbRGB = nRGB;
+
+  if(mbRGB)
+    cout << "- color order: RGB (ignored if grayscale)" << endl;
+  else
+    cout << "- color order: BGR (ignored if grayscale)" << endl;
+
+  // Load ORB parameters
+
+  int nFeatures = orb.nFeatures;
+  float fScaleFactor = orb.scaleFactor;
+  int nLevels = orb.nLevels;
+  int fIniThFAST = orb.iniThFast;
+  int fMinThFAST = orb.minThFast;
+
+  mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+
+  if(sensor==System::STEREO)
+    mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+
+  if(sensor==System::MONOCULAR)
+    mpIniORBextractor = new ORBextractor(2*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+
+  cout << endl  << "ORB Extractor Parameters: " << endl;
+  cout << "- Number of Features: " << nFeatures << endl;
+  cout << "- Scale Levels: " << nLevels << endl;
+  cout << "- Scale Factor: " << fScaleFactor << endl;
+  cout << "- Initial Fast Threshold: " << fIniThFAST << endl;
+  cout << "- Minimum Fast Threshold: " << fMinThFAST << endl;
+}
+
 Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor):
     mState(NO_IMAGES_YET), mSensor(sensor), mbOnlyTracking(false), mbVO(false), mpORBVocabulary(pVoc),
     mpKeyFrameDB(pKFDB), mpInitializer(static_cast<Initializer*>(NULL)), mpSystem(pSys), mpViewer(NULL),
     mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpMap(pMap), mnLastRelocFrameId(0)
 {
-    // Load camera parameters from settings file
+  // Load camera parameters from settings file
 
-    cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);
-    float fx = fSettings["Camera.fx"];
-    float fy = fSettings["Camera.fy"];
-    float cx = fSettings["Camera.cx"];
-    float cy = fSettings["Camera.cy"];
+  cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);
+  float fx = fSettings["Camera.fx"];
+  float fy = fSettings["Camera.fy"];
+  float cx = fSettings["Camera.cx"];
+  float cy = fSettings["Camera.cy"];
 
-    cv::Mat K = cv::Mat::eye(3,3,CV_32F);
-    K.at<float>(0,0) = fx;
-    K.at<float>(1,1) = fy;
-    K.at<float>(0,2) = cx;
-    K.at<float>(1,2) = cy;
-    K.copyTo(mK);
+  cv::Mat K = cv::Mat::eye(3,3,CV_32F);
+  K.at<float>(0,0) = fx;
+  K.at<float>(1,1) = fy;
+  K.at<float>(0,2) = cx;
+  K.at<float>(1,2) = cy;
+  K.copyTo(mK);
 
-    cv::Mat DistCoef(4,1,CV_32F);
-    DistCoef.at<float>(0) = fSettings["Camera.k1"];
-    DistCoef.at<float>(1) = fSettings["Camera.k2"];
-    DistCoef.at<float>(2) = fSettings["Camera.p1"];
-    DistCoef.at<float>(3) = fSettings["Camera.p2"];
-    const float k3 = fSettings["Camera.k3"];
-    if(k3!=0)
-    {
-        DistCoef.resize(5);
-        DistCoef.at<float>(4) = k3;
-    }
-    DistCoef.copyTo(mDistCoef);
+  cv::Mat DistCoef(4,1,CV_32F);
+  DistCoef.at<float>(0) = fSettings["Camera.k1"];
+  DistCoef.at<float>(1) = fSettings["Camera.k2"];
+  DistCoef.at<float>(2) = fSettings["Camera.p1"];
+  DistCoef.at<float>(3) = fSettings["Camera.p2"];
+  const float k3 = fSettings["Camera.k3"];
+  if(k3!=0)
+  {
+    DistCoef.resize(5);
+    DistCoef.at<float>(4) = k3;
+  }
+  DistCoef.copyTo(mDistCoef);
 
-    mbf = fSettings["Camera.bf"];
+  mbf = fSettings["Camera.bf"];
 
-    float fps = fSettings["Camera.fps"];
-    if(fps==0)
-        fps=30;
+  float fps = fSettings["Camera.fps"];
+  if(fps==0)
+    fps=30;
 
-    // Max/Min Frames to insert keyframes and to check relocalisation
-    mMinFrames = 0;
-    mMaxFrames = fps;
+  // Max/Min Frames to insert keyframes and to check relocalisation
+  mMinFrames = 0;
+  mMaxFrames = fps;
 
-    cout << endl << "Camera Parameters: " << endl;
-    cout << "- fx: " << fx << endl;
-    cout << "- fy: " << fy << endl;
-    cout << "- cx: " << cx << endl;
-    cout << "- cy: " << cy << endl;
-    cout << "- k1: " << DistCoef.at<float>(0) << endl;
-    cout << "- k2: " << DistCoef.at<float>(1) << endl;
-    if(DistCoef.rows==5)
-        cout << "- k3: " << DistCoef.at<float>(4) << endl;
-    cout << "- p1: " << DistCoef.at<float>(2) << endl;
-    cout << "- p2: " << DistCoef.at<float>(3) << endl;
-    cout << "- fps: " << fps << endl;
+  cout << endl << "Camera Parameters: " << endl;
+  cout << "- fx: " << fx << endl;
+  cout << "- fy: " << fy << endl;
+  cout << "- cx: " << cx << endl;
+  cout << "- cy: " << cy << endl;
+  cout << "- k1: " << DistCoef.at<float>(0) << endl;
+  cout << "- k2: " << DistCoef.at<float>(1) << endl;
+  if(DistCoef.rows==5)
+    cout << "- k3: " << DistCoef.at<float>(4) << endl;
+  cout << "- p1: " << DistCoef.at<float>(2) << endl;
+  cout << "- p2: " << DistCoef.at<float>(3) << endl;
+  cout << "- fps: " << fps << endl;
 
 
-    int nRGB = fSettings["Camera.RGB"];
-    mbRGB = nRGB;
+  int nRGB = fSettings["Camera.RGB"];
+  mbRGB = nRGB;
 
-    if(mbRGB)
-        cout << "- color order: RGB (ignored if grayscale)" << endl;
+  if(mbRGB)
+    cout << "- color order: RGB (ignored if grayscale)" << endl;
+  else
+    cout << "- color order: BGR (ignored if grayscale)" << endl;
+
+  // Load ORB parameters
+
+  int nFeatures = fSettings["ORBextractor.nFeatures"];
+  float fScaleFactor = fSettings["ORBextractor.scaleFactor"];
+  int nLevels = fSettings["ORBextractor.nLevels"];
+  int fIniThFAST = fSettings["ORBextractor.iniThFAST"];
+  int fMinThFAST = fSettings["ORBextractor.minThFAST"];
+
+  mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+
+  if(sensor==System::STEREO)
+    mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+
+  if(sensor==System::MONOCULAR)
+    mpIniORBextractor = new ORBextractor(2*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+
+  cout << endl  << "ORB Extractor Parameters: " << endl;
+  cout << "- Number of Features: " << nFeatures << endl;
+  cout << "- Scale Levels: " << nLevels << endl;
+  cout << "- Scale Factor: " << fScaleFactor << endl;
+  cout << "- Initial Fast Threshold: " << fIniThFAST << endl;
+  cout << "- Minimum Fast Threshold: " << fMinThFAST << endl;
+
+  if(sensor==System::STEREO || sensor==System::RGBD)
+  {
+    mThDepth = mbf*(float)fSettings["ThDepth"]/fx;
+    cout << endl << "Depth Threshold (Close/Far Points): " << mThDepth << endl;
+  }
+
+  if(sensor==System::RGBD)
+  {
+    mDepthMapFactor = fSettings["DepthMapFactor"];
+    if(fabs(mDepthMapFactor)<1e-5)
+      mDepthMapFactor=1;
     else
-        cout << "- color order: BGR (ignored if grayscale)" << endl;
-
-    // Load ORB parameters
-
-    int nFeatures = fSettings["ORBextractor.nFeatures"];
-    float fScaleFactor = fSettings["ORBextractor.scaleFactor"];
-    int nLevels = fSettings["ORBextractor.nLevels"];
-    int fIniThFAST = fSettings["ORBextractor.iniThFAST"];
-    int fMinThFAST = fSettings["ORBextractor.minThFAST"];
-
-    mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
-
-    if(sensor==System::STEREO)
-        mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
-
-    if(sensor==System::MONOCULAR)
-        mpIniORBextractor = new ORBextractor(2*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
-
-    cout << endl  << "ORB Extractor Parameters: " << endl;
-    cout << "- Number of Features: " << nFeatures << endl;
-    cout << "- Scale Levels: " << nLevels << endl;
-    cout << "- Scale Factor: " << fScaleFactor << endl;
-    cout << "- Initial Fast Threshold: " << fIniThFAST << endl;
-    cout << "- Minimum Fast Threshold: " << fMinThFAST << endl;
-
-    if(sensor==System::STEREO || sensor==System::RGBD)
-    {
-        mThDepth = mbf*(float)fSettings["ThDepth"]/fx;
-        cout << endl << "Depth Threshold (Close/Far Points): " << mThDepth << endl;
-    }
-
-    if(sensor==System::RGBD)
-    {
-        mDepthMapFactor = fSettings["DepthMapFactor"];
-        if(fabs(mDepthMapFactor)<1e-5)
-            mDepthMapFactor=1;
-        else
-            mDepthMapFactor = 1.0f/mDepthMapFactor;
-    }
+      mDepthMapFactor = 1.0f/mDepthMapFactor;
+  }
 
 }
 

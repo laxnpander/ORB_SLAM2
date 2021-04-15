@@ -27,6 +27,17 @@
 namespace ORB_SLAM2
 {
 
+MapDrawer::MapDrawer(Map* pMap) :
+  mpMap(pMap),
+  mKeyFrameSize(0.05),
+  mKeyFrameLineWidth(1.0),
+  mGraphLineWidth(0.9),
+  mPointSize(2.0),
+  mCameraSize(0.08),
+  mCameraLineWidth(3.0)
+{
+
+}
 
 MapDrawer::MapDrawer(Map* pMap, const string &strSettingPath):mpMap(pMap)
 {

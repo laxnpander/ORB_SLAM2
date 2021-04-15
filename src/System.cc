@@ -21,6 +21,7 @@
 
 
 #include "System.h"
+#include "Tracking.h"
 #include "Converter.h"
 #include <thread>
 #include <pangolin/pangolin.h>
@@ -29,9 +30,93 @@
 namespace ORB_SLAM2
 {
 
-System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor,
-               const bool bUseViewer):mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false),mbActivateLocalizationMode(false),
-        mbDeactivateLocalizationMode(false)
+bool has_suffix(const std::string &str, const std::string &suffix) {
+  std::size_t index = str.find(suffix, str.size() - suffix.size());
+  return (index != std::string::npos);
+}
+
+System::System(const std::string &strVocFile, const CameraParameters &cam, const OrbParameters &orb, const eSensor sensor):
+  mSensor(sensor),
+  mpViewer(static_cast<Viewer*>(NULL)),
+  mbReset(false),
+  mbActivateLocalizationMode(false),
+  mbDeactivateLocalizationMode(false)
+{
+  // Output welcome message
+  cout << endl <<
+       "ORB-SLAM2 Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza." << endl <<
+       "This program comes with ABSOLUTELY NO WARRANTY;" << endl  <<
+       "This is free software, and you are welcome to redistribute it" << endl <<
+       "under certain conditions. See LICENSE.txt." << endl << endl;
+
+  cout << "Input sensor was set to: ";
+
+  if(mSensor==MONOCULAR)
+    cout << "Monocular" << endl;
+  else if(mSensor==STEREO)
+    cout << "Stereo" << endl;
+  else if(mSensor==RGBD)
+    cout << "RGB-D" << endl;
+
+  //----
+  //Load ORB Vocabulary
+  cout << endl << "Loading ORB Vocabulary from " << strVocFile << endl;
+
+  mpVocabulary = new ORB_SLAM2::ORBVocabulary();
+  bool bVocLoad = false;
+  // chose loading method based on file extension
+  if (has_suffix(strVocFile, ".txt"))
+    bVocLoad = mpVocabulary->loadFromTextFile(strVocFile);
+  else
+    bVocLoad = mpVocabulary->loadFromBinaryFile(strVocFile);
+
+  if(!bVocLoad)
+  {
+    cerr << "Wrong path to vocabulary. " << endl;
+    cerr << "Failed to open at: " << strVocFile << endl;
+    exit(-1);
+  }
+  cout << "Vocabulary loaded!" << endl << endl;
+
+  //Create KeyFrame Database
+  mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
+
+  //Create the Map
+  mpMap = new Map();
+
+  //Create Drawers. These are used by the Viewer
+  mpFrameDrawer = new FrameDrawer(mpMap);
+  mpMapDrawer = new MapDrawer(mpMap);
+
+  //Initialize the Tracking thread
+  //(it will live in the main thread of execution, the one that called this constructor)
+  mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer, mpMap, mpKeyFrameDatabase, cam, orb, mSensor);
+
+  //Initialize the Local Mapping thread and launch
+  mpLocalMapper = new LocalMapping(mpMap, mSensor==MONOCULAR);
+  mptLocalMapping = new thread(&ORB_SLAM2::LocalMapping::Run,mpLocalMapper);
+
+  //Initialize the Loop Closing thread and launch
+  mpLoopCloser = new LoopClosing(mpMap, mpKeyFrameDatabase, mpVocabulary, mSensor!=MONOCULAR);
+  mptLoopClosing = new thread(&ORB_SLAM2::LoopClosing::Run, mpLoopCloser);
+
+  //Set pointers between threads
+  mpTracker->SetLocalMapper(mpLocalMapper);
+  mpTracker->SetLoopClosing(mpLoopCloser);
+
+  mpLocalMapper->SetTracker(mpTracker);
+  mpLocalMapper->SetLoopCloser(mpLoopCloser);
+
+  mpLoopCloser->SetTracker(mpTracker);
+  mpLoopCloser->SetLocalMapper(mpLocalMapper);
+}
+
+System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer)
+ : mSensor(sensor),
+   mpViewer(static_cast<Viewer*>(NULL)),
+   mbReset(false),
+   mbActivateLocalizationMode(false),
+   mbDeactivateLocalizationMode(false)
 {
     // Output welcome message
     cout << endl <<
@@ -487,6 +572,18 @@ vector<cv::KeyPoint> System::GetTrackedKeyPointsUn()
 {
     unique_lock<mutex> lock(mMutexState);
     return mTrackedKeyPointsUn;
+}
+
+int System::GetLastKeyFrameId()
+{
+  unique_lock<mutex> lock(mMutexState);
+  return mpTracker->mnLastKeyFrameId;
+}
+
+cv::Mat System::DrawTrackedImage()
+{
+  unique_lock<mutex> lock(mMutexState);
+  return mpFrameDrawer->DrawFrame();
 }
 
 } //namespace ORB_SLAM

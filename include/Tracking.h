@@ -50,10 +50,34 @@ class LocalMapping;
 class LoopClosing;
 class System;
 
+struct CameraParameters
+{
+  bool isRGB;
+  float fps;
+  int width;
+  int height;
+  cv::Mat K;
+  cv::Mat distCoeffs;
+};
+
+struct OrbParameters
+{
+  int nFeatures;
+  float scaleFactor;
+  int nLevels;
+  int iniThFast;
+  int minThFast;
+};
+
 class Tracking
-{  
+{
+public:
+  friend System;
 
 public:
+    Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Map *pMap,
+             KeyFrameDatabase* pKFDB, const CameraParameters &cam, const OrbParameters &orb, const int sensor);
+
     Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Map* pMap,
              KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor);
 

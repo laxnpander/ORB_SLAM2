@@ -21,7 +21,10 @@
 #ifndef FRAME_H
 #define FRAME_H
 
-#include<vector>
+#include <vector>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "MapPoint.h"
 #include "Thirdparty/DBoW2/DBoW2/BowVector.h"

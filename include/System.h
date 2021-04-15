@@ -26,7 +26,6 @@
 #include<thread>
 #include<opencv2/core/core.hpp>
 
-#include "Tracking.h"
 #include "FrameDrawer.h"
 #include "MapDrawer.h"
 #include "Map.h"
@@ -45,6 +44,8 @@ class Map;
 class Tracking;
 class LocalMapping;
 class LoopClosing;
+class CameraParameters;
+class OrbParameters;
 
 class System
 {
@@ -57,6 +58,8 @@ public:
     };
 
 public:
+
+    System(const std::string &strVocFile, const CameraParameters &cam, const OrbParameters &orb, const eSensor sensor);
 
     // Initialize the SLAM system. It launches the Local Mapping, Loop Closing and Viewer threads.
     System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true);
@@ -121,6 +124,9 @@ public:
     int GetTrackingState();
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
+
+    int GetLastKeyFrameId();
+    cv::Mat DrawTrackedImage();
 
 private:
 
